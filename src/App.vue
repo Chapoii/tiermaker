@@ -30,7 +30,7 @@
               placeholder="输入项目名称..."
               @keyup.enter="addItem"
             />
-            <button class="btn btn-sm btn-primary" @click="addItem">+ 添加</button>
+            <button class="btn btn-sm btn-primary btn-add" @click="addItem">+ 添加</button>
           </div>
           <div class="pool-batch">
             <textarea
@@ -42,7 +42,12 @@
             <button class="btn btn-sm btn-outline" @click="batchAdd">批量添加</button>
           </div>
         </div>
-        <div class="pool-items">
+        <div
+          class="pool-items"
+          @dragover.prevent="onPoolDragOver"
+          @drop="onPoolDrop"
+          @dragleave="onPoolDragLeave"
+        >
           <div
             v-for="(item, index) in unrankedItems"
             :key="item.id"
@@ -50,8 +55,19 @@
             draggable="true"
             @dragstart="onPoolDragStart($event, index)"
           >
-            <span class="item-name">{{ item.name }}</span>
-            <button class="btn-icon" @click="removeItem(item.id)">×</button>
+            <span v-if="editingItemId !== item.id" class="item-name">{{ item.name }}</span>
+            <input
+              v-else
+              v-model="editingItemName"
+              class="input input-edit"
+              @keyup.enter="saveEdit(item.id)"
+              @blur="saveEdit(item.id)"
+              ref="editInputRef"
+            />
+            <div class="item-actions">
+              <button v-if="editingItemId !== item.id" class="btn-icon btn-edit" @click="startEdit(item)">✎</button>
+              <button class="btn-icon" @click="removeItem(item.id)">×</button>
+            </div>
           </div>
           <div v-if="unrankedItems.length === 0" class="empty-hint">
             没有待排序的项目了
@@ -70,10 +86,6 @@
         >
           <div class="tier-label" :style="{ background: tier.color }">
             <span class="tier-name" contenteditable="true" @blur="updateTierName(tIndex, $event)">{{ tier.name }}</span>
-            <div class="tier-label-actions">
-              <input type="color" :value="tier.color" @input="updateTierColor(tIndex, $event)" class="color-picker" />
-              <button class="btn-icon-sm" @click="removeTier(tIndex)" title="删除此等级">×</button>
-            </div>
           </div>
           <div
             class="tier-items"
@@ -91,16 +103,19 @@
               @drop.stop="onTierItemDrop($event, tIndex, iIndex)"
             >
               <span class="item-name">{{ item.name }}</span>
-              <button class="btn-icon" @click="unrankItem(item.id)">×</button>
             </div>
             <div v-if="getTierItems(tier.id).length === 0" class="tier-empty">
               拖拽项目到此处
             </div>
           </div>
+          <div class="tier-row-actions no-export">
+            <input type="color" :value="tier.color" @input="updateTierColor(tIndex, $event)" class="color-picker" />
+            <button class="btn-icon-sm" @click="removeTier(tIndex)" title="删除此等级">×</button>
+          </div>
         </div>
 
         <!-- 添加等级 -->
-        <div class="add-tier-row">
+        <div class="add-tier-row no-export">
           <div class="add-tier-controls">
             <input v-model="newTierName" class="input input-sm" placeholder="等级名称..." />
             <input type="color" v-model="newTierColor" class="color-picker" />
@@ -130,6 +145,7 @@
 
 <script setup>
 import { ref, computed } from 'vue'
+import html2canvas from 'html2canvas'
 
 // ==================== 数据 ====================
 const tierBoardRef = ref(null)
@@ -148,6 +164,8 @@ const newItemName = ref('')
 const batchItems = ref('')
 const newTierName = ref('')
 const newTierColor = ref('#a78bfa')
+const editingItemId = ref(null)
+const editingItemName = ref('')
 
 // 拖拽状态
 let dragSource = null // { type: 'pool'|'tier', index, tierIndex? }
@@ -179,6 +197,20 @@ function batchAdd() {
 
 function removeItem(id) {
   items.value = items.value.filter(i => i.id !== id)
+}
+
+function startEdit(item) {
+  editingItemId.value = item.id
+  editingItemName.value = item.name
+}
+
+function saveEdit(id) {
+  const name = editingItemName.value.trim()
+  if (name) {
+    const item = items.value.find(i => i.id === id)
+    if (item) item.name = name
+  }
+  editingItemId.value = null
 }
 
 function unrankItem(id) {
@@ -224,6 +256,28 @@ function onPoolDragStart(event, index) {
   dragSource = { type: 'pool', index }
   event.dataTransfer.effectAllowed = 'move'
   event.dataTransfer.setData('text/plain', '')
+}
+
+// ==================== 拖拽：从等级拖回项目池 ====================
+function onPoolDragOver(event) {
+  event.dataTransfer.dropEffect = 'move'
+  event.currentTarget.classList.add('drag-over')
+}
+
+function onPoolDragLeave(event) {
+  event.currentTarget.classList.remove('drag-over')
+}
+
+function onPoolDrop(event) {
+  event.currentTarget.classList.remove('drag-over')
+  if (!dragSource || dragSource.type !== 'tier') return
+
+  const srcTierId = tiers.value[dragSource.tierIndex].id
+  const srcItems = items.value.filter(i => i.tierId === srcTierId)
+  const item = srcItems[dragSource.index]
+  if (item) item.tierId = null
+
+  dragSource = null
 }
 
 // ==================== 拖拽：放到等级行 ====================
@@ -369,8 +423,29 @@ function resetAll() {
 }
 
 // ==================== 导出图片 ====================
-function exportImage() {
-  alert('提示：请使用浏览器截图功能保存排序结果（推荐使用系统截图工具）')
+async function exportImage() {
+  const board = tierBoardRef.value
+  if (!board) return
+
+  try {
+    const canvas = await html2canvas(board, {
+      backgroundColor: '#0f0f1a',
+      scale: 2,
+      useCORS: true,
+      onclone: (doc) => {
+        doc.querySelectorAll('.no-export').forEach(el => {
+          el.style.display = 'none'
+        })
+      },
+    })
+    const link = document.createElement('a')
+    link.download = 'tiermaker.png'
+    link.href = canvas.toDataURL('image/png')
+    link.click()
+  } catch (e) {
+    console.error('导出失败:', e)
+    alert('导出失败，请重试')
+  }
 }
 </script>
 
@@ -459,6 +534,7 @@ body {
 }
 .btn-outline:hover { border-color: var(--primary); color: var(--primary); }
 .btn-sm { padding: 6px 12px; font-size: 0.8rem; }
+.btn-add { min-width: 72px; }
 .btn-icon {
   background: none;
   border: none;
@@ -569,6 +645,13 @@ body {
   padding: 8px;
   max-height: 60vh;
   overflow-y: auto;
+  transition: background 0.2s;
+  border-radius: 0 0 var(--radius) var(--radius);
+}
+.pool-items.drag-over {
+  background: rgba(108, 92, 231, 0.08);
+  outline: 2px dashed var(--primary);
+  outline-offset: -2px;
 }
 .pool-item {
   display: flex;
@@ -587,6 +670,26 @@ body {
   background: var(--bg-hover);
 }
 .pool-item:active { cursor: grabbing; }
+.item-actions {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  flex-shrink: 0;
+}
+.btn-edit {
+  font-size: 0.85rem;
+  color: var(--text-dim);
+}
+.btn-edit:hover {
+  color: var(--primary);
+  background: rgba(108, 92, 231, 0.1);
+}
+.input-edit {
+  padding: 4px 8px;
+  font-size: 0.85rem;
+  flex: 1;
+  min-width: 0;
+}
 .item-name {
   font-size: 0.85rem;
   font-weight: 500;
@@ -613,11 +716,11 @@ body {
 }
 
 .tier-label {
-  width: 100px;
-  min-width: 100px;
+  width: 120px;
+  min-width: 120px;
   padding: 12px;
   display: flex;
-  flex-direction: column;
+  flex-direction: row;
   align-items: center;
   justify-content: center;
   gap: 6px;
@@ -637,10 +740,15 @@ body {
   border-radius: 4px;
   padding: 2px 6px;
 }
-.tier-label-actions {
+.tier-row-actions {
   display: flex;
   align-items: center;
   gap: 4px;
+  padding: 8px;
+  flex-shrink: 0;
+}
+.no-export {
+  /* 导出时隐藏 */
 }
 .color-picker {
   width: 20px;
